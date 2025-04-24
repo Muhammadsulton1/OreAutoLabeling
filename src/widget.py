@@ -2,9 +2,11 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import cv2
 import os
-from zipfile import ZipFile
-import numpy as np
+import torch
+
 from ultralytics import YOLO
+from src.strategy import AnnotationStrategyFactory
+from src.utils import download_model
 
 
 class Application(tk.Tk):
@@ -13,9 +15,17 @@ class Application(tk.Tk):
         self.title("YOLO Annotation Generator")
         self.geometry("1080x920")
 
-        self.model = YOLO('../weight/best_segment.pt')
-        self.model.fuse()
+        if torch.cuda.is_available():
+            messagebox.showinfo("DEVICE", "Обработка моделей будет на ГПУ")
+            weight = download_model('cuda')
 
+            self.model = YOLO(weight)
+            self.model.fuse()
+
+        else:
+            messagebox.showinfo("DEVICE", "Обработка моделей будет выполняться на процессоре")
+
+        self.annotation_strategy = None
         self.create_widgets()
 
     def create_widgets(self):
@@ -43,7 +53,22 @@ class Application(tk.Tk):
         ttk.Scale(self, variable=self.iou, from_=0.0, to=1.0, orient=tk.HORIZONTAL).grid(
             row=5, column=1, columnspan=2, sticky=tk.EW, padx=5, pady=5)
 
-        ttk.Button(self, text="СТАРТ", command=self.start_processing).grid(row=6, column=1, pady=20)
+        ttk.Label(self, text="Annotation Type:").grid(row=6, column=0, padx=5, pady=5, sticky=tk.W)
+        self.model_type = tk.StringVar()
+        model_menu = ttk.Combobox(
+            self,
+            textvariable=self.model_type,
+            values=["Object Detection", "Segmentation", "Oriented Object Box"],
+            state="readonly"
+        )
+        model_menu.grid(row=6, column=1, padx=5, pady=5, sticky=tk.W)
+        model_menu.set("Object Detection")
+
+        ttk.Label(self, text="Выберите с каким шагом нарезать кадр:").grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
+        self.skip_frame = tk.IntVar(value=0)
+        ttk.Entry(self, textvariable=self.skip_frame, width=50).grid(row=7, column=1, padx=5, pady=5)
+
+        ttk.Button(self, text="СТАРТ", command=self.start_processing).grid(row=8, column=1, pady=20)
 
     def browse_media_folder(self):
         folder = filedialog.askdirectory()
@@ -60,14 +85,9 @@ class Application(tk.Tk):
             if not self.media_folder.get() or not self.save_path.get():
                 raise ValueError("Пожалуйста, укажите исходную папку и папку назначения")
 
-            # Create output directory if not exists
             os.makedirs(self.save_path.get(), exist_ok=True)
-
-            # Process files
+            self.annotation_strategy = AnnotationStrategyFactory.create_strategy(self.model_type.get())
             self.process_files()
-
-            # Create ZIP archive
-            self.create_zip_archive()
 
             messagebox.showinfo("Успех", "Обработка завершена успешно!")
         except Exception as e:
@@ -83,7 +103,6 @@ class Application(tk.Tk):
 
             if filename.lower().endswith((".jpg", ".jpeg", ".png")):
                 self.process_image(file_path, base_name, conf_threshold, iou_threshold)
-
             elif filename.lower().endswith((".mp4", ".avi")):
                 self.process_video(file_path, base_name, conf_threshold, iou_threshold)
 
@@ -98,11 +117,12 @@ class Application(tk.Tk):
         save_label_path = os.path.join(self.save_path.get(), f"{base_name}.txt")
 
         cv2.imwrite(save_img_path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-        self.write_annotation(save_label_path, results)
+        self.annotation_strategy.process(results, save_label_path, (640, 640))
 
     def process_video(self, video_path, base_name, conf, iou):
         cap = cv2.VideoCapture(video_path)
-        frame_num = 1
+        frame_num = 0
+        skip_frame = self.skip_frame.get()
 
         try:
             while cap.isOpened():
@@ -110,62 +130,22 @@ class Application(tk.Tk):
                 if not ret:
                     break
 
-                # Process frame
-                processed_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                processed_frame = cv2.resize(processed_frame, (640, 640))
+                if frame_num % skip_frame == 0:
 
-                # Perform prediction
-                results = self.model.predict(processed_frame, conf=conf, iou=iou, verbose=False)[0]
+                    processed_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    processed_frame = cv2.resize(processed_frame, (640, 640))
 
-                # Save results
-                save_img_path = os.path.join(self.save_path.get(), f"{base_name}_{frame_num:04d}.png")
-                save_label_path = os.path.join(self.save_path.get(), f"{base_name}_{frame_num:04d}.txt")
+                    results = self.model.predict(processed_frame, conf=conf, iou=iou, verbose=False)[0]
 
-                cv2.imwrite(save_img_path, cv2.cvtColor(processed_frame, cv2.COLOR_RGB2BGR))
-                self.write_annotation(save_label_path, results)
+                    save_img_path = os.path.join(self.save_path.get(), f"{base_name}_{frame_num:04d}.png")
+                    save_label_path = os.path.join(self.save_path.get(), f"{base_name}_{frame_num:04d}.txt")
+
+                    cv2.imwrite(save_img_path, cv2.cvtColor(processed_frame, cv2.COLOR_RGB2BGR))
+                    self.annotation_strategy.process(results, save_label_path, (640, 640))
 
                 frame_num += 1
         finally:
             cap.release()
-
-    @staticmethod
-    def write_annotation(label_path, results):
-        with open(label_path, 'w') as f:
-            if results.masks is not None:
-                for i, mask in enumerate(results.masks):
-                    # Check if corresponding box exists
-                    if i >= len(results.boxes):
-                        continue
-
-                    class_id = int(results.boxes.cls[i])
-                    mask_np = mask.data[0].cpu().numpy()
-                    mask_int = (mask_np > 0.5).astype(np.uint8) * 255
-
-                    contours, _ = cv2.findContours(mask_int, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    if not contours:
-                        continue
-
-                    largest_contour = max(contours, key=cv2.contourArea)
-                    epsilon = 0.001 * cv2.arcLength(largest_contour, True)
-                    approx = cv2.approxPolyDP(largest_contour, epsilon, True)
-                    approx = approx.reshape(-1, 2)
-
-                    height, width = mask_int.shape
-                    normalized = approx / [width, height]
-                    normalized = normalized.flatten().round(6).tolist()
-
-                    f.write(f"{class_id} " + " ".join(map(str, normalized)) + "\n")
-
-    def create_zip_archive(self):
-        zip_path = os.path.join(os.path.dirname(self.save_path.get()), self.zip_name.get())
-
-        with ZipFile(zip_path, 'w') as zipf:
-            for root, _, files in os.walk(self.save_path.get()):
-                for file in files:
-                    zipf.write(
-                        os.path.join(root, file),
-                        arcname=os.path.relpath(os.path.join(root, file), self.save_path.get())
-                    )
 
 
 if __name__ == "__main__":
