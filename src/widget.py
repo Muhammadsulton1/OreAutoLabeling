@@ -7,6 +7,7 @@ import torch
 from ultralytics import YOLO
 from src.strategy import AnnotationStrategyFactory
 from src.utils import download_model
+from src.inference import InferenceModel
 
 
 class Application(tk.Tk):
@@ -15,12 +16,15 @@ class Application(tk.Tk):
         self.title("YOLO Annotation Generator")
         self.geometry("1080x920")
 
+        self.model_type_inference = tk.StringVar(value="YOLOV8")
         if torch.cuda.is_available():
             messagebox.showinfo("DEVICE", "Обработка моделей будет на ГПУ")
             weight = download_model('cuda')
 
-            self.model = YOLO(weight)
-            self.model.fuse()
+            # self.model = YOLO(weight)
+            # self.model.fuse()
+
+            self.model = InferenceModel(self.model_type_inference.get())
 
         else:
             messagebox.showinfo("DEVICE", "Обработка моделей будет выполняться на процессоре")
@@ -68,7 +72,18 @@ class Application(tk.Tk):
         self.skip_frame = tk.IntVar(value=0)
         ttk.Entry(self, textvariable=self.skip_frame, width=50).grid(row=7, column=1, padx=5, pady=5)
 
-        ttk.Button(self, text="СТАРТ", command=self.start_processing).grid(row=8, column=1, pady=20)
+        ttk.Label(self, text="Model Inference Type:").grid(row=8, column=0, padx=5, pady=5, sticky=tk.W)
+        self.model_type_inference = tk.StringVar()
+        model_menu = ttk.Combobox(
+            self,
+            textvariable=self.model_type_inference,
+            values=["YOLOV8", "SAM"],
+            state="readonly"
+        )
+        model_menu.grid(row=8, column=1, padx=5, pady=5, sticky=tk.W)
+        model_menu.set("YOLOV8")
+
+        ttk.Button(self, text="СТАРТ", command=self.start_processing).grid(row=9, column=1, pady=20)
 
     def browse_media_folder(self):
         folder = filedialog.askdirectory()
@@ -97,21 +112,31 @@ class Application(tk.Tk):
         conf_threshold = self.conf.get()
         iou_threshold = self.iou.get()
 
-        for filename in os.listdir(self.media_folder.get()):
-            file_path = os.path.join(self.media_folder.get(), filename)
-            base_name = os.path.splitext(filename)[0]
+        if os.path.isdir(self.media_folder.get()):
+            for filename in os.listdir(self.media_folder.get()):
+                file_path = os.path.join(self.media_folder.get(), filename)
+                base_name = os.path.splitext(filename)[0]
 
-            if filename.lower().endswith((".jpg", ".jpeg", ".png")):
-                self.process_image(file_path, base_name, conf_threshold, iou_threshold)
-            elif filename.lower().endswith((".mp4", ".avi")):
-                self.process_video(file_path, base_name, conf_threshold, iou_threshold)
+                if filename.lower().endswith((".jpg", ".jpeg", ".png")):
+                    self.process_image(file_path, base_name, conf_threshold, iou_threshold)
+                elif filename.lower().endswith((".mp4", ".avi")):
+                    self.process_video(file_path, base_name, conf_threshold, iou_threshold)
+
+        elif os.path.isfile(self.media_folder.get()):
+            base_name = os.path.splitext(self.media_folder.get())[0]
+            if self.model_type.get().endswith((".mp4", ".avi")):
+                self.process_video(self.media_folder.get(), base_name, conf_threshold, iou_threshold)
+            elif self.model_type.get().endswith((".jpg", ".jpeg", ".png")):
+                self.process_image(self.media_folder.get(), base_name, conf_threshold, iou_threshold)
+            else:
+                raise ValueError("Не поддерживаемый формат медиа")
 
     def process_image(self, img_path, base_name, conf, iou):
         img = cv2.imread(img_path)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         img = cv2.resize(img, (640, 640))
 
-        results = self.model.predict(img, conf=conf, iou=iou, verbose=False)[0]
+        results = self.model.process(img, conf=conf, iou=iou)[0]
 
         save_img_path = os.path.join(self.save_path.get(), f"{base_name}.png")
         save_label_path = os.path.join(self.save_path.get(), f"{base_name}.txt")
@@ -131,11 +156,10 @@ class Application(tk.Tk):
                     break
 
                 if frame_num % skip_frame == 0:
-
                     processed_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     processed_frame = cv2.resize(processed_frame, (640, 640))
 
-                    results = self.model.predict(processed_frame, conf=conf, iou=iou, verbose=False)[0]
+                    results = self.model.process(processed_frame, conf=conf, iou=iou)[0]
 
                     save_img_path = os.path.join(self.save_path.get(), f"{base_name}_{frame_num:04d}.png")
                     save_label_path = os.path.join(self.save_path.get(), f"{base_name}_{frame_num:04d}.txt")

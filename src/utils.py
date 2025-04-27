@@ -1,4 +1,6 @@
 import os
+import cv2
+import numpy as np
 
 
 def download_model(device: str) -> os.path:
