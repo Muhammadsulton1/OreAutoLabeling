@@ -4,7 +4,6 @@ import cv2
 import os
 import torch
 
-from ultralytics import YOLO
 from src.strategy import AnnotationStrategyFactory
 from src.utils import download_model
 from src.inference import InferenceModel
@@ -52,7 +51,7 @@ class Application(tk.Tk):
         ttk.Scale(self, variable=self.iou, from_=0.0, to=1.0, orient=tk.HORIZONTAL).grid(
             row=5, column=1, columnspan=2, sticky=tk.EW, padx=5, pady=5)
 
-        ttk.Label(self, text="Annotation Type:").grid(row=6, column=0, padx=5, pady=5, sticky=tk.W)
+        ttk.Label(self, text="Вид разметки:").grid(row=6, column=0, padx=5, pady=5, sticky=tk.W)
         self.model_type = tk.StringVar()
         model_menu = ttk.Combobox(
             self,
@@ -63,11 +62,30 @@ class Application(tk.Tk):
         model_menu.grid(row=6, column=1, padx=5, pady=5, sticky=tk.W)
         model_menu.set("Object Detection")
 
-        ttk.Label(self, text="Выберите с каким шагом нарезать кадр:").grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
-        self.skip_frame = tk.IntVar(value=0)
-        ttk.Entry(self, textvariable=self.skip_frame, width=50).grid(row=7, column=1, padx=5, pady=5)
+        ttk.Label(self, text="Формат аннотации:").grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
+        self.annotation_format = tk.StringVar()
+        format_menu = ttk.Combobox(
+            self,
+            textvariable=self.annotation_format,
+            values=["YOLO", "COCO"],
+            state="readonly"
+        )
+        format_menu.grid(row=7, column=1, padx=5, pady=5, sticky=tk.W)
+        format_menu.set("YOLO")
 
-        ttk.Label(self, text="Model Inference Type:").grid(row=8, column=0, padx=5, pady=5, sticky=tk.W)
+        ttk.Label(self, text="Категории COCO (JSON):").grid(row=8, column=0, padx=5, pady=5, sticky=tk.W)
+        self.coco_categories = tk.Text(self, height=5, width=50)
+        self.coco_categories.grid(row=8, column=1, padx=5, pady=5)
+        self.coco_categories.insert(tk.END, '[{"id": 0, "name": "person"},{"id": 1, "name": "car"}, {}]')  # Пример по умолчанию
+        self.coco_categories.grid_remove()
+
+        self.annotation_format.trace_add('write', self.toggle_coco_fields)
+
+        ttk.Label(self, text="Выберите с каким шагом нарезать кадр:").grid(row=9, column=0, padx=5, pady=5, sticky=tk.W)
+        self.skip_frame = tk.IntVar(value=0)
+        ttk.Entry(self, textvariable=self.skip_frame, width=50).grid(row=9, column=1, padx=5, pady=5)
+
+        ttk.Label(self, text="Model Inference Type:").grid(row=10, column=0, padx=5, pady=5, sticky=tk.W)
         self.model_type_inference = tk.StringVar()
         model_menu = ttk.Combobox(
             self,
@@ -75,17 +93,23 @@ class Application(tk.Tk):
             values=["YOLOV8", "SAM"],
             state="readonly"
         )
-        model_menu.grid(row=8, column=1, padx=5, pady=5, sticky=tk.W)
+        model_menu.grid(row=10, column=1, padx=5, pady=5, sticky=tk.W)
         model_menu.set("YOLOV8")
 
-        ttk.Button(self, text="СТАРТ", command=self.start_processing).grid(row=9, column=1, pady=20)
+    def toggle_coco_fields(self, *args):
+        if self.annotation_format.get() == "COCO":
+            self.coco_categories.grid()
+        else:
+            self.coco_categories.grid_remove()
+
+        ttk.Button(self, text="СТАРТ", command=self.start_processing).grid(row=11, column=1, pady=20)
 
         # Текущий файл и прогресс
         self.current_file_label = ttk.Label(self, text="")
-        self.current_file_label.grid(row=10, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
+        self.current_file_label.grid(row=12, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
 
         self.progress_bar = ttk.Progressbar(self, orient=tk.HORIZONTAL, length=300, mode='determinate')
-        self.progress_bar.grid(row=11, column=0, columnspan=3, padx=5, pady=5)
+        self.progress_bar.grid(row=13, column=0, columnspan=3, padx=5, pady=5)
 
     def browse_media_folder(self):
         folder = filedialog.askdirectory()
@@ -161,7 +185,7 @@ class Application(tk.Tk):
         cap = cv2.VideoCapture(video_path)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if total_frames <= 0:
-            total_frames = 1  # Во избежание деления на ноль
+            total_frames = 1
 
         frame_num = 0
         skip_frame = self.skip_frame.get() or 1
