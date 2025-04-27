@@ -20,12 +20,7 @@ class Application(tk.Tk):
         if torch.cuda.is_available():
             messagebox.showinfo("DEVICE", "Обработка моделей будет на ГПУ")
             weight = download_model('cuda')
-
-            # self.model = YOLO(weight)
-            # self.model.fuse()
-
             self.model = InferenceModel(self.model_type_inference.get())
-
         else:
             messagebox.showinfo("DEVICE", "Обработка моделей будет выполняться на процессоре")
 
@@ -85,6 +80,13 @@ class Application(tk.Tk):
 
         ttk.Button(self, text="СТАРТ", command=self.start_processing).grid(row=9, column=1, pady=20)
 
+        # Текущий файл и прогресс
+        self.current_file_label = ttk.Label(self, text="")
+        self.current_file_label.grid(row=10, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
+
+        self.progress_bar = ttk.Progressbar(self, orient=tk.HORIZONTAL, length=300, mode='determinate')
+        self.progress_bar.grid(row=11, column=0, columnspan=3, padx=5, pady=5)
+
     def browse_media_folder(self):
         folder = filedialog.askdirectory()
         if folder:
@@ -107,29 +109,40 @@ class Application(tk.Tk):
             messagebox.showinfo("Успех", "Обработка завершена успешно!")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Произошла ошибка:\n{str(e)}")
+        finally:
+            self.current_file_label.config(text="")
+            self.progress_bar["value"] = 0
 
     def process_files(self):
         conf_threshold = self.conf.get()
         iou_threshold = self.iou.get()
 
-        if os.path.isdir(self.media_folder.get()):
-            for filename in os.listdir(self.media_folder.get()):
-                file_path = os.path.join(self.media_folder.get(), filename)
-                base_name = os.path.splitext(filename)[0]
+        media_path = self.media_folder.get()
+        files_to_process = []
+        if os.path.isdir(media_path):
+            for filename in os.listdir(media_path):
+                file_path = os.path.join(media_path, filename)
+                if filename.lower().endswith((".jpg", ".jpeg", ".png", ".mp4", ".avi")):
+                    files_to_process.append(file_path)
+        elif os.path.isfile(media_path) and media_path.lower().endswith((".jpg", ".jpeg", ".png", ".mp4", ".avi")):
+            files_to_process.append(media_path)
 
-                if filename.lower().endswith((".jpg", ".jpeg", ".png")):
-                    self.process_image(file_path, base_name, conf_threshold, iou_threshold)
-                elif filename.lower().endswith((".mp4", ".avi")):
-                    self.process_video(file_path, base_name, conf_threshold, iou_threshold)
+        total_files = len(files_to_process)
+        if total_files == 0:
+            raise ValueError("Нет файлов для обработки")
 
-        elif os.path.isfile(self.media_folder.get()):
-            base_name = os.path.splitext(self.media_folder.get())[0]
-            if self.model_type.get().endswith((".mp4", ".avi")):
-                self.process_video(self.media_folder.get(), base_name, conf_threshold, iou_threshold)
-            elif self.model_type.get().endswith((".jpg", ".jpeg", ".png")):
-                self.process_image(self.media_folder.get(), base_name, conf_threshold, iou_threshold)
-            else:
-                raise ValueError("Не поддерживаемый формат медиа")
+        for i, file_path in enumerate(files_to_process):
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
+            self.current_file_label.config(text=f"Обработка файла {i+1} из {total_files}: {os.path.basename(file_path)}")
+            self.progress_bar["value"] = 0
+            self.update_idletasks()
+
+            if file_path.lower().endswith((".jpg", ".jpeg", ".png")):
+                self.process_image(file_path, base_name, conf_threshold, iou_threshold)
+                self.progress_bar["value"] = 100
+                self.update_idletasks()
+            elif file_path.lower().endswith((".mp4", ".avi")):
+                self.process_video(file_path, base_name, conf_threshold, iou_threshold)
 
     def process_image(self, img_path, base_name, conf, iou):
         img = cv2.imread(img_path)
@@ -146,11 +159,19 @@ class Application(tk.Tk):
 
     def process_video(self, video_path, base_name, conf, iou):
         cap = cv2.VideoCapture(video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames <= 0:
+            total_frames = 1  # Во избежание деления на ноль
+
         frame_num = 0
-        skip_frame = self.skip_frame.get()
+        skip_frame = self.skip_frame.get() or 1
+
+        self.progress_bar["maximum"] = 100
+        self.progress_bar["value"] = 0
+        self.update_idletasks()
 
         try:
-            while cap.isOpened():
+            while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
@@ -167,7 +188,13 @@ class Application(tk.Tk):
                     cv2.imwrite(save_img_path, cv2.cvtColor(processed_frame, cv2.COLOR_RGB2BGR))
                     self.annotation_strategy.process(results, save_label_path, (640, 640))
 
+                progress = (frame_num / total_frames) * 100
+                self.progress_bar["value"] = progress
+                self.update_idletasks()
                 frame_num += 1
+
+            self.progress_bar["value"] = 100
+            self.update_idletasks()
         finally:
             cap.release()
 
