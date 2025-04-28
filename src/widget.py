@@ -96,12 +96,6 @@ class Application(tk.Tk):
         model_menu.grid(row=10, column=1, padx=5, pady=5, sticky=tk.W)
         model_menu.set("YOLOV8")
 
-    def toggle_coco_fields(self, *args):
-        if self.annotation_format.get() == "COCO":
-            self.coco_categories.grid()
-        else:
-            self.coco_categories.grid_remove()
-
         ttk.Button(self, text="СТАРТ", command=self.start_processing).grid(row=11, column=1, pady=20)
 
         # Текущий файл и прогресс
@@ -110,6 +104,13 @@ class Application(tk.Tk):
 
         self.progress_bar = ttk.Progressbar(self, orient=tk.HORIZONTAL, length=300, mode='determinate')
         self.progress_bar.grid(row=13, column=0, columnspan=3, padx=5, pady=5)
+
+    def toggle_coco_fields(self, *args):
+        if self.annotation_format.get() == "COCO":
+            self.coco_categories.grid()
+        else:
+            self.coco_categories.grid_remove()
+
 
     def browse_media_folder(self):
         folder = filedialog.askdirectory()
